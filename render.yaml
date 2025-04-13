@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: flask-disease-detection
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: MODEL_PATH
+        value: disease_detection_model_quantized.tflite
