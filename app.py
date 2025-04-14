@@ -16,19 +16,14 @@ app = Flask(__name__)
 # Configuration
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg'}
 UPLOAD_FOLDER = tempfile.gettempdir()
-MODEL_PATH = 'models/quran_classifier.pkl'
-
-# Configuration
-ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg'}
-UPLOAD_FOLDER = tempfile.gettempdir()
+MODEL_PATH = 'quran_classifier.pkl'
 
 # Load the trained model and components
 try:
-    with open('models/quran_classifier.pkl', 'rb') as f:
+    with open('quran_classifier.pkl', 'rb') as f:
         model_data = pickle.load(f)
         model = model_data['model']
         scaler = model_data['scaler']
-        label_encoder = model_data['label_encoder']
         
         # Surah mapping (must match your training labels)
         surah_mapping = {
@@ -43,6 +38,12 @@ try:
         # Create reverse mappings
         surah_name_to_id = surah_mapping
         surah_id_to_name = {v: k for k, v in surah_mapping.items()}
+        
+        # Create a mapping between model's class indices and surah names
+        # Assuming the model was trained with classes in the same order as surah_mapping
+        class_index_to_surah = {
+            i: name for i, name in enumerate(sorted(surah_mapping.keys()))
+        }
         
     print("✅ Model loaded successfully!")
 except Exception as e:
@@ -139,13 +140,19 @@ def predict():
         features_scaled = scaler.transform([features])
         
         # Make prediction
-        prediction = model.predict(features_scaled)[0]
+        prediction_idx = model.predict(features_scaled)[0]
         probabilities = model.predict_proba(features_scaled)[0]
         
-        # Get surah details
-        surah_name = label_encoder.inverse_transform([prediction])[0]
-        surah_id = surah_name_to_id.get(surah_name)
+        # Get surah details using our mapping
+        surah_name = class_index_to_surah[prediction_idx]
+        surah_id = surah_name_to_id[surah_name]
         confidence = float(probabilities.max() * 100)
+        
+        # Prepare probabilities dictionary
+        prob_dict = {
+            class_index_to_surah[i]: float(prob) 
+            for i, prob in enumerate(probabilities)
+        }
         
         # Clean up
         os.remove(temp_path)
@@ -155,12 +162,7 @@ def predict():
             'surahId': surah_id,
             'surahName': surah_name,
             'confidence': confidence,
-            'probabilities': {
-                surah_name: confidence/100,
-                **{name: float(prob) 
-                   for name, prob in zip(label_encoder.classes_, probabilities) 
-                   if name != surah_name}
-            }
+            'probabilities': prob_dict
         })
         
     except Exception as e:
