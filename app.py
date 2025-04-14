@@ -44,7 +44,7 @@ except Exception as e:
 def predict():
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
-    
+
     if 'file' not in request.files:
         return jsonify({'error': 'No audio file provided'}), 400
 
@@ -54,31 +54,53 @@ def predict():
 
     temp_dir = tempfile.mkdtemp()
     try:
-        # Ensure the filename has an extension
         filename = secure_filename(file.filename)
         if '.' not in filename:
-            filename += '.m4a'  # Default extension for mobile recordings
-            
+            filename += '.m4a'
+        
         temp_path = os.path.join(temp_dir, filename)
+        print(f"📁 Saving uploaded file to: {temp_path}")
         file.save(temp_path)
 
-        # Verify file was saved
         if not os.path.exists(temp_path):
+            print("❌ File not found after save.")
             return jsonify({'error': 'File save failed'}), 500
         if os.path.getsize(temp_path) == 0:
+            print("❌ File saved but it's empty.")
             return jsonify({'error': 'Empty file received'}), 400
 
-    except Exception as e:
+        print("🔍 Extracting features...")
+        features = extract_features(temp_path)
+        if features is None:
+            print("❌ Feature extraction failed.")
+            return jsonify({'error': 'Failed to extract features'}), 500
+
+        print("🔬 Scaling features...")
+        scaled_features = scaler.transform([features])
+
+        print("🧠 Making prediction...")
+        prediction = model.predict(scaled_features)[0]
+        confidence = max(model.predict_proba(scaled_features)[0])
+
+        surah_id = class_index_to_surah_id.get(prediction, None)
+        surah_name = surah_id_to_name.get(surah_id, "Unknown")
+
+        print(f"✅ Prediction complete: {surah_name} (confidence: {confidence:.2f})")
+
         return jsonify({
-            'error': 'Processing error',
-            'details': str(e)
-        }), 500
+            'surah_id': surah_id,
+            'surah_name': surah_name,
+            'confidence': round(confidence, 4)
+        }), 200
+
+    except Exception as e:
+        print(f"🔥 Internal error: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
     finally:
-        # Clean up temporary directory
         try:
             shutil.rmtree(temp_dir)
         except Exception as e:
-            print(f"Warning: Failed to clean temp directory: {str(e)}")
+            print(f"⚠️ Cleanup error: {str(e)}")
 
 
 def extract_features(audio_path):
