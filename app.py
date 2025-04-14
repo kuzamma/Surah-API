@@ -40,57 +40,33 @@ except Exception as e:
     model = None
     scaler = None
 
-@app.route('/predict', methods=['POST', 'OPTIONS'])
+app.route('/predict', methods=['POST', 'OPTIONS'])
 def predict():
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
     
-    if 'file' not in request.files and 'audio' not in request.files:
+    if 'file' not in request.files:
         return jsonify({'error': 'No audio file provided'}), 400
 
-    file = request.files.get('file') or request.files.get('audio')
+    file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
 
     temp_dir = tempfile.mkdtemp()
     try:
-        # Save to temporary file with proper extension
+        # Ensure the filename has an extension
         filename = secure_filename(file.filename)
+        if '.' not in filename:
+            filename += '.m4a'  # Default extension for mobile recordings
+            
         temp_path = os.path.join(temp_dir, filename)
         file.save(temp_path)
 
-        # Verify file was saved correctly
-        if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
-            return jsonify({'error': 'Failed to save temporary file'}), 500
-
-        # Process the file using existing extract_features
-        features = extract_features(temp_path)
-        if features is None:
-            return jsonify({'error': 'Feature extraction failed - possibly invalid audio format'}), 400
-
-        if model is None:
-            return jsonify({
-                'recognized': True,
-                'surahId': 1,
-                'surahName': "Al-Fatiha",
-                'confidence': 85.0,
-                'warning': 'Using fallback prediction'
-            })
-
-        features_scaled = scaler.transform([features])
-        prediction_idx = model.predict(features_scaled)[0]
-        probabilities = model.predict_proba(features_scaled)[0]
-
-        surah_id = class_index_to_surah_id[prediction_idx]
-        surah_name = surah_id_to_name[surah_id]
-        confidence = float(probabilities.max() * 100)
-
-        return jsonify({
-            'recognized': confidence > 60,
-            'surahId': surah_id,
-            'surahName': surah_name,
-            'confidence': confidence
-        })
+        # Verify file was saved
+        if not os.path.exists(temp_path):
+            return jsonify({'error': 'File save failed'}), 500
+        if os.path.getsize(temp_path) == 0:
+            return jsonify({'error': 'Empty file received'}), 400
 
     except Exception as e:
         return jsonify({
