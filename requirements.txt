@@ -9,3 +9,5 @@ soundfile==0.12.1
 resampy==0.4.2
 pandas==2.0.3
 python-dotenv==1.0.0
+gunicorn==20.1.0
+flask-cors==3.0.10
