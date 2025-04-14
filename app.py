@@ -40,7 +40,7 @@ except Exception as e:
     model = None
     scaler = None
 
-app.route('/predict', methods=['POST', 'OPTIONS'])
+@app.route('/predict', methods=['POST', 'OPTIONS'])
 def predict():
     if request.method == 'OPTIONS':
         return jsonify({'status': 'ok'}), 200
