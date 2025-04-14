@@ -44,34 +44,42 @@ except Exception as e:
     model = None
     scaler = None
 
-@app.route('/predict', methods=['POST', 'OPTIONS'])
+@app.route('/predict', methods=['POST'])
 def predict():
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-    
     if 'file' not in request.files and 'audio' not in request.files:
         return jsonify({'error': 'No audio file provided'}), 400
 
     file = request.files.get('file') or request.files.get('audio')
     if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+        return jsonify({'error': 'Empty filename'}), 400
 
     try:
+        # Validate file size (10KB - 10MB)
+        file.seek(0, os.SEEK_END)
+        file_size = file.tell()
+        file.seek(0)
+        
+        if file_size < 10 * 1024:  # 10KB
+            return jsonify({'error': 'File too small'}), 400
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            return jsonify({'error': 'File too large'}), 400
+
         # Save to temporary file
-        temp_path = os.path.join(tempfile.gettempdir(), secure_filename(file.filename))
+        temp_dir = tempfile.mkdtemp()
+        temp_path = os.path.join(temp_dir, secure_filename(file.filename))
         file.save(temp_path)
+        
+        # Verify file was saved
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+            return jsonify({'error': 'Failed to save temporary file'}), 500
 
-        if model is None:
-            return jsonify({
-                'recognized': True,
-                'surahId': 1,
-                'surahName': "Al-Fatiha",
-                'confidence': 85.0
-            })
-
+        # Process the file
         features = extract_features(temp_path)
         if features is None:
-            return jsonify({'error': 'Feature extraction failed'}), 400
+            return jsonify({
+                'error': 'Feature extraction failed',
+                'details': 'Audio may be too short, silent, or corrupted'
+            }), 400
 
         features_scaled = scaler.transform([features])
         prediction_idx = model.predict(features_scaled)[0]
@@ -85,14 +93,22 @@ def predict():
             'recognized': confidence > 60,
             'surahId': surah_id,
             'surahName': surah_name,
-            'confidence': confidence
+            'confidence': confidence,
+            'features': features.shape[0]  # For debugging
         })
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': 'Processing error',
+            'details': str(e)
+        }), 500
     finally:
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
+        if 'temp_dir' in locals():
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+            except:
+                pass
 
 def extract_features(audio_path):
     """Consistent feature extraction matching training pipeline"""
