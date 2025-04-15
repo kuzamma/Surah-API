@@ -17,7 +17,7 @@ import time
 
 
 # Configuration
-MODEL_PATH = "models/quran_classifier.pkl"  # Path to your trained model
+MODEL_PATH = "quran_classifier.pkl"  # Path to your trained model
 UPLOAD_FOLDER = 'uploads'  # Folder to store temporary audio files
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg'}  # Allowed audio file extensions
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB file size limit
