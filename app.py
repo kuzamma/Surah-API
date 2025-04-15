@@ -1,185 +1,164 @@
-import os
-import tempfile
-import shutil
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
-from flask_cors import CORS
+import os
 import librosa
 import numpy as np
 import pickle
+import logging
+from logging.handlers import RotatingFileHandler
+import uuid
+import time
 
+# Configuration
+MODEL_PATH = "models/quran_classifier.pkl"  # Path to your trained model
+UPLOAD_FOLDER = 'uploads'  # Folder to store temporary audio files
+ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg'}  # Allowed audio file extensions
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB file size limit
+
+# Create Flask app
 app = Flask(__name__)
-CORS(app, resources={
-    r"/predict": {
-        "origins": "*",
-        "methods": ["POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
-    }
-})
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
-# Load model components
+# Ensure upload directory exists
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Configure logging
+handler = RotatingFileHandler('quran_api.log', maxBytes=1000000, backupCount=5)
+handler.setLevel(logging.INFO)
+app.logger.addHandler(handler)
+
+# Load the trained model
+class QuranClassifierAPI:
+    def __init__(self, model_path):
+        try:
+            with open(model_path, 'rb') as f:
+                components = pickle.load(f)
+                self.model = components['model']
+                self.scaler = components.get('scaler')
+                self.pca = components.get('pca')
+                self.label_encoder = components['label_encoder']
+                self.surah_mapping = components['surah_mapping']
+                self.feature_extractor = components['feature_extractor']
+            app.logger.info("Model loaded successfully")
+        except Exception as e:
+            app.logger.error(f"Failed to load model: {str(e)}")
+            raise
+
+    def extract_features(self, audio_path):
+        """Extract features using the loaded feature extractor"""
+        features, _ = self.feature_extractor.extract_features(audio_path)
+        return features
+
+    def predict(self, audio_path):
+        """Make prediction on an audio file"""
+        try:
+            features = self.extract_features(audio_path)
+            if features is None:
+                return None
+                
+            features = features.reshape(1, -1)
+            
+            # Apply preprocessing steps if they exist
+            if hasattr(self.model, 'named_steps') and 'scaler' in self.model.named_steps:
+                # Pipeline has its own scaler
+                pass
+            elif self.scaler:
+                features = self.scaler.transform(features)
+                
+            if hasattr(self.model, 'named_steps') and 'pca' in self.model.named_steps:
+                # Pipeline has its own PCA
+                pass
+            elif self.pca:
+                features = self.pca.transform(features)
+                
+            pred = self.model.predict(features)[0]
+            probs = self.model.predict_proba(features)[0]
+            
+            surah_name = self.label_encoder.inverse_transform([pred])[0]
+            surah_label = next(k for k, v in self.surah_mapping.items() if v == surah_name)
+            
+            return {
+                'surah': surah_label,
+                'confidence': float(probs.max()),
+                'probabilities': {
+                    k: float(v) for k, v in zip(
+                        self.label_encoder.classes_, 
+                        [round(p, 4) for p in probs]
+                    )
+                }
+            }
+        except Exception as e:
+            app.logger.error(f"Prediction failed: {str(e)}")
+            return None
+
+# Initialize classifier
 try:
-    with open('quran_classifier.pkl', 'rb') as f:
-        model_data = pickle.load(f)
-        model = model_data['model']
-        scaler = model_data['scaler']
-        class_index_to_surah_id = model_data.get('class_index_to_surah_id', {
-            0: 6, 1: 3, 2: 1, 3: 4, 4: 5, 5: 2
-        })
-        surah_id_to_name = {
-            1: "Al-Fatiha",
-            2: "Al-Nas",
-            3: "Al-Falaq",
-            4: "Al-Ikhlas",
-            5: "Al-Kausar",
-            6: "Al-As'r"
-        }
-    print("✅ Model loaded successfully!")
+    classifier = QuranClassifierAPI(MODEL_PATH)
 except Exception as e:
-    print(f"❌ Error loading model: {str(e)}")
-    model = None
-    scaler = None
+    app.logger.error(f"Failed to initialize classifier: {str(e)}")
+    classifier = None
 
-@app.route('/predict', methods=['POST', 'OPTIONS'])
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route('/predict', methods=['POST'])
 def predict():
-    if request.method == 'OPTIONS':
-        return jsonify({'status': 'ok'}), 200
-
+    """API endpoint for surah prediction"""
+    if not classifier:
+        return jsonify({'error': 'Model not loaded'}), 500
+    
+    # Check if the post request has the file part
     if 'file' not in request.files:
-        return jsonify({'error': 'No audio file provided'}), 400
-
+        return jsonify({'error': 'No file part'}), 400
+    
     file = request.files['file']
+    
+    # If user does not select file, browser may submit an empty part without filename
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
-
-    temp_dir = tempfile.mkdtemp()
-    try:
-        filename = secure_filename(file.filename)
-        if '.' not in filename:
-            filename += '.m4a'
-        
-        temp_path = os.path.join(temp_dir, filename)
-        print(f"📁 Saving uploaded file to: {temp_path}")
-        file.save(temp_path)
-
-        if not os.path.exists(temp_path):
-            print("❌ File not found after save.")
-            return jsonify({'error': 'File save failed'}), 500
-        if os.path.getsize(temp_path) == 0:
-            print("❌ File saved but it's empty.")
-            return jsonify({'error': 'Empty file received'}), 400
-
-        print("🔍 Extracting features...")
-        features = extract_features(temp_path)
-        if features is None:
-            print("❌ Feature extraction failed.")
-            return jsonify({'error': 'Failed to extract features'}), 500
-
-        print("🔬 Scaling features...")
-        scaled_features = scaler.transform([features])
-
-        print("🧠 Making prediction...")
-        prediction = model.predict(scaled_features)[0]
-        confidence = max(model.predict_proba(scaled_features)[0])
-
-        surah_id = class_index_to_surah_id.get(prediction, None)
-        surah_name = surah_id_to_name.get(surah_id, "Unknown")
-
-        print(f"✅ Prediction complete: {surah_name} (confidence: {confidence:.2f})")
-
-        return jsonify({
-            'surah_id': surah_id,
-            'surah_name': surah_name,
-            'confidence': round(confidence, 4)
-        }), 200
-
-    except Exception as e:
-        print(f"🔥 Internal error: {str(e)}")
-        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
-    finally:
-        try:
-            shutil.rmtree(temp_dir)
-        except Exception as e:
-            print(f"⚠️ Cleanup error: {str(e)}")
-
-
-def extract_features(audio_path):
-    """Modified feature extraction without aggressive trimming"""
-    try:
-        print("📥 Loading audio...")
-        sample_rate = 22050
-        segment_duration = 5  # seconds
-        stride = 2  # seconds
-        n_mfcc = 13
-        n_fft = 2048
-        hop_length = 512
-
-        try:
-            y, sr = librosa.load(audio_path, sr=sample_rate)
-            print(f"🎧 Loaded with librosa — duration: {librosa.get_duration(y=y, sr=sr):.2f}s")
-        except Exception as e:
-            print(f"⚠️ Librosa failed: {e}, trying pydub...")
-            from pydub import AudioSegment
-            audio = AudioSegment.from_file(audio_path)
-            y = np.array(audio.get_array_of_samples())
-            if audio.channels > 1:
-                y = y.reshape(-1, audio.channels).mean(axis=1)
-            sr = audio.frame_rate
-            if sr != sample_rate:
-                y = librosa.resample(y, orig_sr=sr, target_sr=sample_rate)
-            print(f"🎧 Loaded with pydub — duration: {librosa.get_duration(y=y, sr=sample_rate):.2f}s")
-
-        # ✅ Skip trimming
-        total_duration = librosa.get_duration(y=y, sr=sr)
-        if total_duration < segment_duration:
-            print(f"⏳ Audio too short: {total_duration:.2f}s")
-            return None
-
-        features_list = []
-
-        for start in np.arange(0, total_duration - segment_duration + 0.1, stride):
-            y_segment = y[int(start * sr): int((start + segment_duration) * sr)]
-            print(f"🎯 Segment {start:.2f}s → {start + segment_duration:.2f}s")
-
-            mfccs = librosa.feature.mfcc(
-                y=y_segment,
-                sr=sr,
-                n_mfcc=n_mfcc,
-                n_fft=n_fft,
-                hop_length=hop_length
-            )
-            chroma = librosa.feature.chroma_stft(y=y_segment, sr=sr)
-            contrast = librosa.feature.spectral_contrast(y=y_segment, sr=sr)
-            flatness = librosa.feature.spectral_flatness(y=y_segment)
-
-            segment_features = np.concatenate([
-                np.mean(mfccs.T, axis=0),
-                np.std(mfccs.T, axis=0),
-                np.mean(chroma.T, axis=0),
-                np.mean(contrast.T, axis=0),
-                flatness.flatten()
-            ])
-            features_list.append(segment_features)
-
-        if not features_list:
-            print("❌ No segments processed")
-            return None
-
-        features_mean = np.mean(features_list, axis=0)
-        features_std = np.std(features_list, axis=0)
-        print("✅ Feature extraction complete")
-
-        return np.concatenate([features_mean, features_std])
-
-    except Exception as e:
-        print(f"🔥 Feature extraction error: {str(e)}")
-        return None
-
     
+    if file and allowed_file(file.filename):
+        try:
+            # Generate unique filename
+            filename = secure_filename(file.filename)
+            unique_filename = f"{uuid.uuid4().hex}_{filename}"
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            
+            # Save the file temporarily
+            file.save(filepath)
+            app.logger.info(f"File saved to {filepath}")
+            
+            # Process the file
+            start_time = time.time()
+            result = classifier.predict(filepath)
+            processing_time = time.time() - start_time
+            
+            # Clean up - remove the temporary file
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                app.logger.warning(f"Could not remove temporary file: {str(e)}")
+            
+            if result:
+                result['processing_time'] = processing_time
+                return jsonify(result)
+            else:
+                return jsonify({'error': 'Could not process audio file'}), 400
+        except Exception as e:
+            app.logger.error(f"Error processing file: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+    else:
+        return jsonify({'error': 'File type not allowed'}), 400
+
 @app.route('/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'up'}), 200
+def health_check():
+    """Health check endpoint"""
+    if classifier:
+        return jsonify({'status': 'healthy', 'model_loaded': True})
+    else:
+        return jsonify({'status': 'unhealthy', 'model_loaded': False}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
