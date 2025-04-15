@@ -21,8 +21,7 @@ CORS(app, resources={
 try:
     with open('quran_classifier.pkl', 'rb') as f:
         model_data = pickle.load(f)
-        model = model_data['model']
-        scaler = model_data['scaler']
+        model = model_data['quran_classifier.pkl']
         class_index_to_surah_id = model_data.get('class_index_to_surah_id', {
             0: 6, 1: 3, 2: 1, 3: 4, 4: 5, 5: 2
         })
