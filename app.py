@@ -24,8 +24,8 @@ CORS(app, resources={
 
 # Configs - Adjusted for better performance
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'm4a'}
-MAX_FILE_SIZE_MB = 8  # Increased from 5MB
-PROCESSING_TIMEOUT = 28  # Increased from 25s (Render kills at 30s)
+MAX_FILE_SIZE_MB = 10  # Increased from 5MB
+PROCESSING_TIMEOUT = 20  # Increased from 25s (Render kills at 30s)
 
 # Load model with error handling
 try:
@@ -55,41 +55,27 @@ def extract_features(audio_path):
         )
         
         # Trim with less aggressive settings
-        y, _ = librosa.effects.trim(y, top_db=25)
+        y, _ = librosa.effects.trim(y, top_db=40)
         
-        # More efficient feature extraction
-        features = []
-        segment_length = sr * 2  # 2 second segments
-        hop_length = sr // 2  # 0.5 second hops
-        
-        for i in range(0, len(y) - segment_length, hop_length):
-            y_segment = y[i:i + segment_length]
-            
-            # Extract only essential features
-            mfcc = librosa.feature.mfcc(
-                y=y_segment,
-                sr=sr,
-                n_mfcc=10,
-                hop_length=512,
-                n_fft=2048
-            )
-            spectral_centroid = librosa.feature.spectral_centroid(
-                y=y_segment,
-                sr=sr
-            )
-            
-            features.append(np.concatenate([
-                np.mean(mfcc, axis=1),
-                np.mean(spectral_centroid)
-            ]))
-        
-        if not features:
-            return None
-            
-        return np.concatenate([
-            np.mean(features, axis=0),
-            np.std(features, axis=0)
+        # Extract only essential features
+        mfcc = librosa.feature.mfcc(
+            y=y,
+            sr=sr,
+            n_mfcc=30,
+            hop_length=512,
+            n_fft=2048
+        )
+        spectral_centroid = librosa.feature.spectral_centroid(
+            y=y,
+            sr=sr
+        )
+
+        features = np.concatenate([
+            np.mean(mfcc, axis=1),
+            np.mean(spectral_centroid)
         ])
+
+        return features
     except Exception as e:
         logger.error(f"Feature extraction failed: {e}")
         return None
