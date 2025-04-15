@@ -1,3 +1,8 @@
+
+from flask import Flask, request, jsonify
+from werkzeug.utils import secure_filename
+from flask_cors import CORS
+import pickle
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 import os
@@ -9,14 +14,23 @@ from logging.handlers import RotatingFileHandler
 import uuid
 import time
 
+
+
 # Configuration
 MODEL_PATH = "models/quran_classifier.pkl"  # Path to your trained model
 UPLOAD_FOLDER = 'uploads'  # Folder to store temporary audio files
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg'}  # Allowed audio file extensions
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB file size limit
 
-# Create Flask app
 app = Flask(__name__)
+CORS(app, resources={
+    r"/predict": {
+        "origins": "*",
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
