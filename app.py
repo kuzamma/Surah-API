@@ -28,47 +28,30 @@ MAX_FILE_SIZE_MB = 10  # Increased from 5MB
 PROCESSING_TIMEOUT = 20  # Increased from 25s (Render kills at 30s)
 
 # Load model with error handling
+
 try:
     with open('quran_classifier.pkl', 'rb') as f:
         model_data = pickle.load(f)
         model = model_data['model']
         scaler = model_data['scaler']
-    logger.info("✅ Model loaded successfully")
+        label_encoder = model_data['label_encoder']
+        class_names = model_data['classes']
+    logger.info("✅ Model and components loaded successfully")
 except Exception as e:
     logger.error(f"❌ Model load failed: {e}")
-    model = scaler = None
+    model = scaler = label_encoder = class_names = None
 
 def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_features(audio_path):
     """Optimized feature extraction with memory efficiency"""
     try:
-        # Load audio with more efficient parameters
-        y, sr = librosa.load(
-            audio_path,
-            sr=16000,  # Downsample to reduce processing
-            duration=20,  # Reduced from 30s
-            mono=True,
-            res_type='kaiser_fast'  # Faster resampling
-        )
-        
-        # Trim with less aggressive settings
+        y, sr = librosa.load(audio_path, sr=16000, duration=20, mono=True, res_type='kaiser_fast')
         y, _ = librosa.effects.trim(y, top_db=40)
-        
-        # Extract only essential features
-        mfcc = librosa.feature.mfcc(
-            y=y,
-            sr=sr,
-            n_mfcc=30,
-            hop_length=512,
-            n_fft=2048
-        )
-        spectral_centroid = librosa.feature.spectral_centroid(
-            y=y,
-            sr=sr
-        )
+
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=30, hop_length=512, n_fft=2048)
+        spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)
 
         features = np.concatenate([
             np.mean(mfcc, axis=1),
@@ -83,15 +66,14 @@ def extract_features(audio_path):
 @app.route('/predict', methods=['POST'])
 def predict():
     start_time = time.time()
-    
-    # Early validation
+
     if 'audio' not in request.files:
         return jsonify({"error": "No audio file provided"}), 400
-        
+
     file = request.files['audio']
     if file.filename == '':
         return jsonify({"error": "Empty filename"}), 400
-        
+
     if not allowed_file(file.filename):
         return jsonify({
             "error": f"Invalid file type. Supported: {', '.join(ALLOWED_EXTENSIONS)}"
@@ -99,42 +81,45 @@ def predict():
 
     temp_path = None
     try:
-        # Save to temp file
         filename = secure_filename(file.filename)
         temp_path = os.path.join(tempfile.gettempdir(), f"rec_{int(time.time())}_{filename}")
         file.save(temp_path)
-        
-        # Check file size
+
         file_size = os.path.getsize(temp_path)
         if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
             return jsonify({
                 "error": f"File too large ({file_size/1024/1024:.1f}MB > {MAX_FILE_SIZE_MB}MB limit)"
             }), 400
-        
-        # Timeout check
-        if time.time() - start_time > PROCESSING_TIMEOUT - 2:  # 2s buffer
+
+        if time.time() - start_time > PROCESSING_TIMEOUT - 2:
             return jsonify({"error": "Processing timeout"}), 500
-            
-        # Feature extraction
+
         features = extract_features(temp_path)
         if features is None:
             return jsonify({"error": "Could not extract audio features"}), 400
-            
-        if not model or not scaler:
+
+        if not model or not scaler or not label_encoder:
             return jsonify({"error": "Model not loaded"}), 500
-            
-        # Prediction
+
+        # Scale and predict
         features_scaled = scaler.transform([features])
+        prediction_index = model.predict(features_scaled)[0]
         probabilities = model.predict_proba(features_scaled)[0]
-        prediction = model.predict(features_scaled)[0]
-        
+
+        # Map to readable name
+        surah_name = class_names[prediction_index]
+        surah_id = label_encoder.transform([surah_name])[0]  # numeric class id
+
         return jsonify({
-            "surahId": int(prediction),
+            "surahId": int(surah_id),
+            "surahName": surah_name,
             "confidence": float(np.max(probabilities) * 100),
             "processingTime": time.time() - start_time,
-            "probabilities": probabilities.tolist()
+            "probabilities": {
+                class_names[i]: float(prob) for i, prob in enumerate(probabilities)
+            }
         })
-        
+
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         return jsonify({"error": "Internal server error"}), 500
