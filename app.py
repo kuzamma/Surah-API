@@ -22,13 +22,28 @@ CORS(app, resources={
     }
 })
 
-# Configs - Adjusted for better performance
+# Log incoming requests
+@app.before_request
+def log_request_info():
+    logger.info(f"📥 {request.method} {request.path} - from {request.remote_addr}")
+
+# Log outgoing responses
+@app.after_request
+def log_response_info(response):
+    logger.info(f"🔄 Response Status: {response.status}")
+    return response
+
+# Health check endpoint
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({"status": "✅ Surah API is running"}), 200
+
+# Allowed file types
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'm4a'}
-MAX_FILE_SIZE_MB = 10  # Increased from 5MB
-PROCESSING_TIMEOUT = 20  # Increased from 25s (Render kills at 30s)
+MAX_FILE_SIZE_MB = 10
+PROCESSING_TIMEOUT = 20  # seconds
 
-# Load model with error handling
-
+# Load model and components
 try:
     with open('quran_classifier.pkl', 'rb') as f:
         model_data = pickle.load(f)
@@ -45,7 +60,7 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_features(audio_path):
-    """Optimized feature extraction with memory efficiency"""
+    """Extract MFCC and spectral features from the audio"""
     try:
         y, sr = librosa.load(audio_path, sr=16000, duration=20, mono=True, res_type='kaiser_fast')
         y, _ = librosa.effects.trim(y, top_db=40)
@@ -57,10 +72,9 @@ def extract_features(audio_path):
             np.mean(mfcc, axis=1),
             np.mean(spectral_centroid)
         ])
-
         return features
     except Exception as e:
-        logger.error(f"Feature extraction failed: {e}")
+        logger.error(f"⚠️ Feature extraction failed: {e}")
         return None
 
 @app.route('/predict', methods=['POST'])
@@ -101,14 +115,12 @@ def predict():
         if not model or not scaler or not label_encoder:
             return jsonify({"error": "Model not loaded"}), 500
 
-        # Scale and predict
         features_scaled = scaler.transform([features])
         prediction_index = model.predict(features_scaled)[0]
         probabilities = model.predict_proba(features_scaled)[0]
 
-        # Map to readable name
         surah_name = class_names[prediction_index]
-        surah_id = label_encoder.transform([surah_name])[0]  # numeric class id
+        surah_id = label_encoder.transform([surah_name])[0]
 
         return jsonify({
             "surahId": int(surah_id),
@@ -121,15 +133,17 @@ def predict():
         })
 
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
+        logger.error(f"🚨 Prediction error: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
     finally:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except Exception as e:
-                logger.error(f"Failed to delete temp file: {e}")
+                logger.error(f"🧹 Failed to delete temp file: {e}")
 
+# Run app
 if __name__ == '__main__':
     app.run(
         host='0.0.0.0',
