@@ -31,8 +31,12 @@ START_OFFSET = 8.0
 
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'm4a', 'ogg'}
 MAX_FILE_SIZE_MB = 10
-PROCESSING_TIMEOUT = 20  # seconds
+PROCESSING_TIMEOUT = 60  # seconds
 
+
+# Set max content length (in bytes) for file uploads (e.g., 10 MB)
+app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE_MB * 1024 * 1024  # Convert MB to bytes
+ 
 # Load model and components
 try:
     with open('quran_classifier.pkl', 'rb') as f:
