@@ -44,7 +44,7 @@ try:
 
     logger.info("✅ Model and components loaded successfully")
 except Exception as e:
-    logger.error(f"❌ Model load failed: {e}")
+    logger.error(f"Model load failed: {e}")
     model = label_encoder = surah_mapping = None
     class_names = []
 
