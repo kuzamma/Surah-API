@@ -1,11 +1,11 @@
 import os
+import io
 import time
 import numpy as np
 import librosa
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
-import tempfile
 import pickle
 import logging
 import warnings
@@ -17,11 +17,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create app
 app = Flask(__name__)
 CORS(app)
 
-# === Configuration ===
+# Configuration
 SAMPLE_RATE = 22050
 N_MFCC = 13
 N_FFT = 2048
@@ -29,43 +28,46 @@ HOP_LENGTH = 512
 SEGMENT_DURATION = 5
 STRIDE = 2
 START_OFFSET = 8.0
+
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'm4a', 'ogg'}
 MAX_FILE_SIZE_MB = 10
 PROCESSING_TIMEOUT = 60  # seconds
 
-# Set max content length (in bytes) for uploads
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE_MB * 1024 * 1024
 
-# === Load model globally when app starts ===
+# Load model and components globally
 try:
     with open('quran_classifier.pkl', 'rb') as f:
         model_data = pickle.load(f)
-    model = model_data['model']               # full pipeline (scaler+pca+classifier)
-    label_encoder = model_data['label_encoder']
-    surah_mapping = model_data['surah_mapping']
-    class_names = model_data['classes']
-
-    logger.info("✅ Model and components loaded successfully.")
+        model = model_data['model']
+        label_encoder = model_data['label_encoder']
+        surah_mapping = model_data['surah_mapping']
+        class_names = model_data['classes']
+    logger.info("✅ Model loaded successfully")
 except Exception as e:
-    logger.error(f"🚨 Model load failed: {e}")
-    model, label_encoder, surah_mapping = None, None, None
+    logger.error(f"Model load failed: {e}")
+    model = label_encoder = surah_mapping = None
     class_names = []
 
-# === Helpers ===
+# Helpers
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def extract_features(file_path):
+def extract_features_from_bytes(audio_bytes):
+    """Extract features directly from in-memory bytes."""
     try:
-        y, sr = librosa.load(file_path, sr=SAMPLE_RATE, offset=START_OFFSET, duration=None)
+        audio_stream = io.BytesIO(audio_bytes)
+        y, sr = librosa.load(audio_stream, sr=SAMPLE_RATE, offset=START_OFFSET, duration=None)
         y, _ = librosa.effects.trim(y, top_db=40)
 
         total_duration = librosa.get_duration(y=y, sr=sr)
         if total_duration < SEGMENT_DURATION:
-            logger.warning(f"⚠️ Audio too short after offset ({total_duration:.2f}s)")
+            logger.warning(f"Audio too short after offset: {total_duration:.2f} seconds")
             return None
 
-        # Global features
+        segment_features_list = []
+
+        # Additional features
         try:
             from librosa.feature import rhythm
             tempo = rhythm.tempo(y=y, sr=sr)[0]
@@ -82,7 +84,7 @@ def extract_features(file_path):
             np.mean(librosa.effects.percussive(y=y))
         ])
 
-        segment_features = []
+        # Segment-wise features
         for start in range(0, int(total_duration) - SEGMENT_DURATION + 1, STRIDE):
             y_segment = y[start * sr : (start + SEGMENT_DURATION) * sr]
 
@@ -104,28 +106,28 @@ def extract_features(file_path):
                 np.std(contrast, axis=1),
                 np.mean(flatness, axis=1)
             ])
-            segment_features.append(feature_vector)
 
-        if not segment_features:
+            segment_features_list.append(feature_vector)
+
+        if not segment_features_list:
             return None
 
-        segment_features = np.array(segment_features)
-        features_mean = np.mean(segment_features, axis=0)
-        features_std = np.std(segment_features, axis=0)
+        segment_features_array = np.array(segment_features_list)
+        features_mean = np.mean(segment_features_array, axis=0)
+        features_std = np.std(segment_features_array, axis=0)
 
         full_features = np.concatenate([features_mean, features_std, additional_features])
-        logger.info(f"✅ Feature extracted: {full_features.shape}")
 
+        logger.info(f"Extracted feature shape: {full_features.shape}")
         return full_features
 
     except Exception as e:
         logger.error(f"🚨 Error extracting features: {e}")
         return None
 
-# === Routes ===
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"status": "✅ Surah API is running!"}), 200
+    return jsonify({"status": "✅ Surah API is running"}), 200
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -137,49 +139,45 @@ def predict():
     file = request.files['audio']
     if file.filename == '':
         return jsonify({"error": "Empty filename"}), 400
+
     if not allowed_file(file.filename):
         return jsonify({"error": "Invalid file type"}), 400
 
-    temp_path = None
     try:
-        filename = secure_filename(file.filename)
-        temp_path = os.path.join(tempfile.gettempdir(), f"rec_{int(time.time())}_{filename}")
-        file.save(temp_path)
-
-        features = extract_features(temp_path)
+        audio_bytes = file.read()
+        features = extract_features_from_bytes(audio_bytes)
         if features is None:
-            return jsonify({"error": "Could not extract features from audio"}), 400
+            return jsonify({"error": "Could not extract features"}), 400
 
         features = features.reshape(1, -1)
-        logger.info(f"📈 Features ready for prediction: {features.shape}")
+        logger.info(f"Features ready: {features.shape}")
 
         prediction = model.predict(features)[0]
         probabilities = model.predict_proba(features)[0]
 
         surah_name = next(k for k, v in surah_mapping.items() if v == prediction)
 
-        response = {
+        return jsonify({
             "surahId": int(prediction),
             "surahName": surah_name,
             "confidence": float(np.max(probabilities)),
-            "processingTime": round(time.time() - start_time, 3),
+            "processingTime": time.time() - start_time,
             "probabilities": {
                 name: float(probabilities[i]) for i, name in enumerate(label_encoder.classes_)
             }
-        }
-        return jsonify(response), 200
+        })
 
     except Exception as e:
         logger.error(f"🚨 Error during prediction: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception as e:
-                logger.error(f"🧹 Error cleaning up temp file: {e}")
-
-# === Main Start ===
+# Start app
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    logger.info("🚀 Starting Flask app...")
+    app.run(
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 8080)),
+        threaded=True,
+        debug=False
+    )
+   
